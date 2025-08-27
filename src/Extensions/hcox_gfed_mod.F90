@@ -409,6 +409,7 @@ CONTAINS
              SpcArr = SpcArr * (1.0_sp - Inst%POG1frac)
           CASE ( 'SOAP' )
              SpcArr = SpcArr * Inst%SOAPfrac
+!FAB MAM 
 !==============================================================================
 ! This code is required for partitioning NOx emissions directly to PAN and HNO3.
 ! We will keep it here as an option for users focusing on North American fires.
