@@ -147,6 +147,9 @@ MODULE HCOX_GFED_MOD
    REAL(sp)                       :: BCPIfrac
    REAL(sp)                       :: POG1frac
    REAL(sp)                       :: SOAPfrac
+   !FAB MAM emissions( ifdef ?)
+   REAL(sp)                       :: MAMPOMfrac
+   REAL(sp)                       :: MAMBCm2n
 
    !=================================================================
    ! DATA ARRAY POINTERS
@@ -215,6 +218,8 @@ CONTAINS
 
     REAL(hp), TARGET    :: SpcArr(HcoState%NX,HcoState%NY)
     REAL(hp), TARGET    :: TypArr(HcoState%NX,HcoState%NY)
+
+    REAL(hp), TARGET    :: MAMArr(HcoState%NX,HcoState%NY)
 
     TYPE(MyInst), POINTER :: Inst
 
@@ -409,7 +414,16 @@ CONTAINS
              SpcArr = SpcArr * (1.0_sp - Inst%POG1frac)
           CASE ( 'SOAP' )
              SpcArr = SpcArr * Inst%SOAPfrac
-!FAB MAM 
+!FAB MAM apply scaling for POM and for mass to number distribution 
+! note MAMPOM4 must absolutly come before MAMNu4 in the hemco config 
+! gfed extension improve this
+          CASE ( 'MAMPOM4') 
+            MAMArr = 0.0
+            SpcArr = SpcArr * Inst%MAMPOMfrac
+            MAMArr = SpcArr
+          CASE ( 'MAMNu4')
+            SpcArr = SpcArr * Inst%MAMBCm2n  &  ! contrbution of BC to number 
+                   + MAMArr * Inst%MAMBCm2n ! contribution of POM (same m2n scaling as BC for now)
 !==============================================================================
 ! This code is required for partitioning NOx emissions directly to PAN and HNO3.
 ! We will keep it here as an option for users focusing on North American fires.
@@ -691,6 +705,31 @@ CONTAINS
        Inst%SOAPfrac = ValSp
     ENDIF
 
+!FAB MAM4 modifs ( consider precompiling key ??)
+   CALL GetExtOpt( HcoState%Config, ExtNr, 'OC to MAMPOM', &
+                     OptValSp=ValSp, FOUND=FOUND, RC=RC )
+    IF ( RC /= HCO_SUCCESS ) THEN
+        CALL HCO_ERROR( 'ERROR 14', RC, THISLOC=LOC )
+        RETURN
+    ENDIF
+    IF ( .NOT. FOUND ) THEN
+       Inst%MAMPOMfrac = 1.26
+    ELSE
+       Inst%MAMPOMfrac = ValSp
+    ENDIF
+
+    CALL GetExtOpt( HcoState%Config, ExtNr, 'MAMBC mass2number', &
+                     OptValSp=ValSp, FOUND=FOUND, RC=RC )
+    IF ( RC /= HCO_SUCCESS ) THEN
+        CALL HCO_ERROR( 'ERROR 14', RC, THISLOC=LOC )
+        RETURN
+    ENDIF
+    IF ( .NOT. FOUND ) THEN
+       Inst%MAMBCm2n = 4.4097551641407386e+17
+    ELSE
+       Inst%MAMBCm2n = ValSp
+    ENDIF
+
     ! Error check: OCPIfrac, BCPIfrac, and POG1frac must be between 0 and 1
     IF ( Inst%OCPIfrac < 0.0_sp .OR. Inst%OCPIfrac > 1.0_sp .OR. &
          Inst%BCPIfrac < 0.0_sp .OR. Inst%BCPIfrac > 1.0_sp .OR. &
@@ -901,6 +940,13 @@ CONTAINS
        IF ( TRIM(SpcName) == 'POG1' ) SpcName = 'OC'
        IF ( TRIM(SpcName) == 'POG2' ) SpcName = 'OC'
        IF ( TRIM(SpcName) == 'NAP'  ) SpcName = 'CO'
+!FAB MAM4 primary carbon mode emissions are calulated from GFED BC and OC emissions
+! (with appropriate scale factors) 
+       IF ( TRIM(SpcName) == 'MAMPOM4' ) SpcName = 'OC'
+       IF ( TRIM(SpcName) == 'MAMBC4' )  SpcName = 'BC'
+! For MAM carbon mode number emission : base it initially on GFED BC 
+! The number contribution of POM4 (scaled from GFED OC) will be added in GFED_run 
+       IF ( TRIM(SpcName) == 'MAMNu4' )  SpcName = 'BC'
 !==============================================================================
 ! This code is required for partitioning NOx emissions directly to PAN and HNO3.
 ! We will keep it here as an option for users focusing on North American fires.
