@@ -65,6 +65,17 @@ MODULE HCOX_SeaSalt_Mod
    INTEGER             :: IDTSALAAL         ! Fine SSA Alkalinity species ID
    INTEGER             :: IDTSALCAL         ! Coarse SSA Alkalinity species ID
 
+   !FAB: MAM (3-mode inorganic sea salt speciation) tracer IDs. No dedicated
+   ! on/off flag -- these default to -1 (unmapped, zero cost) unless the
+   ! corresponding species names are actually listed in the SeaSalt species
+   ! field of HEMCO_Config.rc, same convention as MOPO/MOPI/BrSALA below.
+   INTEGER             :: IDTMAMSSLT1, IDTMAMCL1, IDTMAMSO41, IDTMAMNu1 ! accum.
+   INTEGER             :: IDTMAMSSLT2, IDTMAMCL2, IDTMAMSO42, IDTMAMNu2 ! aitken
+   INTEGER             :: IDTMAMSSLT3, IDTMAMCL3, IDTMAMSO43, IDTMAMNu3 ! coarse
+   REAL*8              :: MAMSplitR         ! accum/aitken split radius, r80 [um]
+   REAL*8              :: SSNamf, SSClmf, SSSO4f ! Na/Cl/SO4 mass fractions of SSA
+   REAL*8              :: Mass2NumAcc, Mass2NumAitk, Mass2NumCoarse ! N/M [#/kg]
+
    ! Scale factors
    REAL*8              :: BrContent         ! Ratio of Br- to dry SSA (mass)
    REAL*8              :: WindScale         ! Wind adjustment factor
@@ -202,6 +213,27 @@ CONTAINS
     REAL(hp), TARGET       :: FLUXSALAAL(HcoState%NX,HcoState%NY)
     REAL(hp), TARGET       :: FLUXSALCAL(HcoState%NX,HcoState%NY)
 
+    !FAB: MAM 3-mode inorganic sea salt (fine/aitken split of the accum.
+    ! range; coarse reuses FLUXSALC below). Composition (Na/Cl/SO4) and
+    ! number are derived from these totals in the output section.
+    REAL(hp), TARGET       :: FLUXMAMACC (HcoState%NX,HcoState%NY)
+    REAL(hp), TARGET       :: FLUXMAMAITK(HcoState%NX,HcoState%NY)
+    REAL*8                 :: SALT_MAMACC, SALT_MAMAITK
+    ! MAM composition (Na/Cl/SO4) + number, derived from FLUXMAMACC/
+    ! FLUXMAMAITK/FLUXSALC just before HCO_EmisAdd.
+    REAL(hp), TARGET       :: FLUXMAMSSLT1(HcoState%NX,HcoState%NY)
+    REAL(hp), TARGET       :: FLUXMAMCL1  (HcoState%NX,HcoState%NY)
+    REAL(hp), TARGET       :: FLUXMAMSO41 (HcoState%NX,HcoState%NY)
+    REAL(hp), TARGET       :: FLUXMAMNu1  (HcoState%NX,HcoState%NY)
+    REAL(hp), TARGET       :: FLUXMAMSSLT2(HcoState%NX,HcoState%NY)
+    REAL(hp), TARGET       :: FLUXMAMCL2  (HcoState%NX,HcoState%NY)
+    REAL(hp), TARGET       :: FLUXMAMSO42 (HcoState%NX,HcoState%NY)
+    REAL(hp), TARGET       :: FLUXMAMNu2  (HcoState%NX,HcoState%NY)
+    REAL(hp), TARGET       :: FLUXMAMSSLT3(HcoState%NX,HcoState%NY)
+    REAL(hp), TARGET       :: FLUXMAMCL3  (HcoState%NX,HcoState%NY)
+    REAL(hp), TARGET       :: FLUXMAMSO43 (HcoState%NX,HcoState%NY)
+    REAL(hp), TARGET       :: FLUXMAMNu3  (HcoState%NX,HcoState%NY)
+
     ! New variables (jaegle 5/11/11)
     REAL*8                 :: SST, SCALE
     ! jpp, 3/2/10
@@ -290,6 +322,8 @@ CONTAINS
     FLUXSALCCL = 0.0_hp
     FLUXSALAAL = 0.0_hp
     FLUXSALCAL = 0.0_hp
+    FLUXMAMACC  = 0.0_hp !FAB
+    FLUXMAMAITK = 0.0_hp !FAB
     SNOWSALA   = 0.0_hp
     SNOWSALC   = 0.0_hp
 
@@ -324,6 +358,7 @@ CONTAINS
 !$OMP DEFAULT( SHARED )                                                &
 !$OMP PRIVATE( I, J, A_M2, W10M, SST, SCALE, N                       ) &
 !$OMP PRIVATE( SALT, SALT_N, R, SALT_NR, RC                          ) &
+!$OMP PRIVATE( SALT_MAMACC, SALT_MAMAITK                             ) &
 !$OMP PRIVATE( OMSS1, OMSS2, CHLR                                    ) &
 !$OMP PRIVATE( FROPEN, SNOWSALT, AGE                                 ) &
 !$OMP PRIVATE( FRICTVEL, WVMR, TEMP, PRESS, P_ICE, RH_ICE            ) &
@@ -464,6 +499,8 @@ CONTAINS
           SALT   = 0d0
           SALT_N = 0d0
           SNOWSALT = 0d0
+          SALT_MAMACC  = 0d0 !FAB
+          SALT_MAMAITK = 0d0 !FAB
 
           ! update seasalt from blowing snow - huang 1/4/18
           IF (( Inst%EmitSnowSS ) .and. ( N .LT.3 )) THEN
@@ -528,6 +565,22 @@ CONTAINS
 
              ENDIF
 
+             !FAB: MAM 3-mode split -- partition the SAME accumulation-mode
+             ! (N=1) bins used for SALA above into an aitken sub-range
+             ! (r80 < MAMSplitR) and an accum-only sub-range (r80 >=
+             ! MAMSplitR). SALA/SALC (N=1,2 above) are untouched, so
+             ! legacy species keep their existing values -- this is purely
+             ! additive/non-exclusive.
+             IF ( N == 1 ) THEN
+                IF ( Inst%RRMID(R,N) < Inst%MAMSplitR ) THEN
+                   SALT_MAMAITK = SALT_MAMAITK +                    &
+                            ( SCALE * Inst%SRRC(R,N) * A_M2 * W10M**3.41d0 )
+                ELSE
+                   SALT_MAMACC  = SALT_MAMACC +                     &
+                            ( SCALE * Inst%SRRC(R,N) * A_M2 * W10M**3.41d0 )
+                ENDIF
+             ENDIF
+
              ! Marine organic aerosols (M. Johnson, B. Gantt)
              IF ( N .EQ. 3 ) THEN
 
@@ -562,6 +615,10 @@ CONTAINS
           IF     ( N == 1 ) THEN
              FLUXSALA(I,J) = SALT / A_M2 / HcoState%TS_EMIS
              SNOWSALA(I,J) = SNOWSALT / A_M2 / HcoState%TS_EMIS
+             !FAB: MAM accum-only / aitken totals (subset of the SALA total
+             ! above; see split logic in the R loop)
+             FLUXMAMACC(I,J)  = SALT_MAMACC  / A_M2 / HcoState%TS_EMIS
+             FLUXMAMAITK(I,J) = SALT_MAMAITK / A_M2 / HcoState%TS_EMIS
           ELSEIF ( N == 2 ) THEN
              FLUXSALC(I,J) = SALT / A_M2 / HcoState%TS_EMIS
              SNOWSALC(I,J) = SNOWSALT / A_M2 / HcoState%TS_EMIS
@@ -726,6 +783,130 @@ CONTAINS
 
     ENDIF
 
+    !=================================================================
+    !FAB: MAM 3-mode inorganic sea salt speciation (Na/Cl/SO4 + number).
+    ! Each mode's basis is a total-mass flux that is otherwise untouched
+    ! by legacy species: FLUXMAMACC/FLUXMAMAITK are new (accum-only /
+    ! aitken sub-ranges of the N=1 pass), FLUXSALC (coarse) is the
+    ! existing, unmodified N=2 total. Purely additive: every block below
+    ! only fires if the corresponding MAMxxx species is actually listed
+    ! in the SeaSalt species field of HEMCO_Config.rc (IDT > 0).
+    !=================================================================
+
+    ! --- Accumulation mode (from FLUXMAMACC) ---
+    IF ( Inst%IDTMAMSSLT1 > 0 ) THEN
+       FLUXMAMSSLT1 = FLUXMAMACC * Inst%SSNamf
+       CALL HCO_EmisAdd( HcoState, FLUXMAMSSLT1, Inst%IDTMAMSSLT1, &
+                         RC,       ExtNr=Inst%ExtNrSS )
+       IF ( RC /= HCO_SUCCESS ) THEN
+          CALL HCO_ERROR( 'HCO_EmisAdd error: FLUXMAMSSLT1', RC )
+          RETURN
+       ENDIF
+    ENDIF
+    IF ( Inst%IDTMAMCL1 > 0 ) THEN
+       FLUXMAMCL1 = FLUXMAMACC * Inst%SSClmf
+       CALL HCO_EmisAdd( HcoState, FLUXMAMCL1, Inst%IDTMAMCL1, &
+                         RC,       ExtNr=Inst%ExtNrSS )
+       IF ( RC /= HCO_SUCCESS ) THEN
+          CALL HCO_ERROR( 'HCO_EmisAdd error: FLUXMAMCL1', RC )
+          RETURN
+       ENDIF
+    ENDIF
+    IF ( Inst%IDTMAMSO41 > 0 ) THEN
+       FLUXMAMSO41 = FLUXMAMACC * Inst%SSSO4f
+       CALL HCO_EmisAdd( HcoState, FLUXMAMSO41, Inst%IDTMAMSO41, &
+                         RC,       ExtNr=Inst%ExtNrSS )
+       IF ( RC /= HCO_SUCCESS ) THEN
+          CALL HCO_ERROR( 'HCO_EmisAdd error: FLUXMAMSO41', RC )
+          RETURN
+       ENDIF
+    ENDIF
+    IF ( Inst%IDTMAMNu1 > 0 ) THEN
+       FLUXMAMNu1 = FLUXMAMACC * Inst%Mass2NumAcc
+       CALL HCO_EmisAdd( HcoState, FLUXMAMNu1, Inst%IDTMAMNu1, &
+                         RC,       ExtNr=Inst%ExtNrSS )
+       IF ( RC /= HCO_SUCCESS ) THEN
+          CALL HCO_ERROR( 'HCO_EmisAdd error: FLUXMAMNu1', RC )
+          RETURN
+       ENDIF
+    ENDIF
+
+    ! --- Aitken mode (from FLUXMAMAITK) ---
+    IF ( Inst%IDTMAMSSLT2 > 0 ) THEN
+       FLUXMAMSSLT2 = FLUXMAMAITK * Inst%SSNamf
+       CALL HCO_EmisAdd( HcoState, FLUXMAMSSLT2, Inst%IDTMAMSSLT2, &
+                         RC,       ExtNr=Inst%ExtNrSS )
+       IF ( RC /= HCO_SUCCESS ) THEN
+          CALL HCO_ERROR( 'HCO_EmisAdd error: FLUXMAMSSLT2', RC )
+          RETURN
+       ENDIF
+    ENDIF
+    IF ( Inst%IDTMAMCL2 > 0 ) THEN
+       FLUXMAMCL2 = FLUXMAMAITK * Inst%SSClmf
+       CALL HCO_EmisAdd( HcoState, FLUXMAMCL2, Inst%IDTMAMCL2, &
+                         RC,       ExtNr=Inst%ExtNrSS )
+       IF ( RC /= HCO_SUCCESS ) THEN
+          CALL HCO_ERROR( 'HCO_EmisAdd error: FLUXMAMCL2', RC )
+          RETURN
+       ENDIF
+    ENDIF
+    IF ( Inst%IDTMAMSO42 > 0 ) THEN
+       FLUXMAMSO42 = FLUXMAMAITK * Inst%SSSO4f
+       CALL HCO_EmisAdd( HcoState, FLUXMAMSO42, Inst%IDTMAMSO42, &
+                         RC,       ExtNr=Inst%ExtNrSS )
+       IF ( RC /= HCO_SUCCESS ) THEN
+          CALL HCO_ERROR( 'HCO_EmisAdd error: FLUXMAMSO42', RC )
+          RETURN
+       ENDIF
+    ENDIF
+    IF ( Inst%IDTMAMNu2 > 0 ) THEN
+       FLUXMAMNu2 = FLUXMAMAITK * Inst%Mass2NumAitk
+       CALL HCO_EmisAdd( HcoState, FLUXMAMNu2, Inst%IDTMAMNu2, &
+                         RC,       ExtNr=Inst%ExtNrSS )
+       IF ( RC /= HCO_SUCCESS ) THEN
+          CALL HCO_ERROR( 'HCO_EmisAdd error: FLUXMAMNu2', RC )
+          RETURN
+       ENDIF
+    ENDIF
+
+    ! --- Coarse mode (from FLUXSALC -- unchanged legacy total) ---
+    IF ( Inst%IDTMAMSSLT3 > 0 ) THEN
+       FLUXMAMSSLT3 = FLUXSALC * Inst%SSNamf
+       CALL HCO_EmisAdd( HcoState, FLUXMAMSSLT3, Inst%IDTMAMSSLT3, &
+                         RC,       ExtNr=Inst%ExtNrSS )
+       IF ( RC /= HCO_SUCCESS ) THEN
+          CALL HCO_ERROR( 'HCO_EmisAdd error: FLUXMAMSSLT3', RC )
+          RETURN
+       ENDIF
+    ENDIF
+    IF ( Inst%IDTMAMCL3 > 0 ) THEN
+       FLUXMAMCL3 = FLUXSALC * Inst%SSClmf
+       CALL HCO_EmisAdd( HcoState, FLUXMAMCL3, Inst%IDTMAMCL3, &
+                         RC,       ExtNr=Inst%ExtNrSS )
+       IF ( RC /= HCO_SUCCESS ) THEN
+          CALL HCO_ERROR( 'HCO_EmisAdd error: FLUXMAMCL3', RC )
+          RETURN
+       ENDIF
+    ENDIF
+    IF ( Inst%IDTMAMSO43 > 0 ) THEN
+       FLUXMAMSO43 = FLUXSALC * Inst%SSSO4f
+       CALL HCO_EmisAdd( HcoState, FLUXMAMSO43, Inst%IDTMAMSO43, &
+                         RC,       ExtNr=Inst%ExtNrSS )
+       IF ( RC /= HCO_SUCCESS ) THEN
+          CALL HCO_ERROR( 'HCO_EmisAdd error: FLUXMAMSO43', RC )
+          RETURN
+       ENDIF
+    ENDIF
+    IF ( Inst%IDTMAMNu3 > 0 ) THEN
+       FLUXMAMNu3 = FLUXSALC * Inst%Mass2NumCoarse
+       CALL HCO_EmisAdd( HcoState, FLUXMAMNu3, Inst%IDTMAMNu3, &
+                         RC,       ExtNr=Inst%ExtNrSS )
+       IF ( RC /= HCO_SUCCESS ) THEN
+          CALL HCO_ERROR( 'HCO_EmisAdd error: FLUXMAMNu3', RC )
+          RETURN
+       ENDIF
+    ENDIF
+
     ! Cleanup
     Inst => NULL()
 
@@ -871,6 +1052,89 @@ CONTAINS
        Inst%IDTMOPO = HcoIDsSS(9)
        Inst%IDTMOPI = HcoIDsSS(10)
     ENDIF
+
+    !FAB: MAM 3-mode inorganic sea salt speciation. Positions 11-22 are
+    ! optional -- no dedicated on/off flag, this is purely driven by
+    ! whether the species field in HEMCO_Config.rc is long enough to
+    ! include them (matches the MOPO/MOPI/BrSALA convention above).
+    ! Default all to -1 (unmapped, zero-cost) first.
+    Inst%IDTMAMSSLT1 = -1; Inst%IDTMAMCL1 = -1; Inst%IDTMAMSO41 = -1; Inst%IDTMAMNu1 = -1
+    Inst%IDTMAMSSLT2 = -1; Inst%IDTMAMCL2 = -1; Inst%IDTMAMSO42 = -1; Inst%IDTMAMNu2 = -1
+    Inst%IDTMAMSSLT3 = -1; Inst%IDTMAMCL3 = -1; Inst%IDTMAMSO43 = -1; Inst%IDTMAMNu3 = -1
+    IF ( nSpcSS >= 22 ) THEN
+       Inst%IDTMAMSSLT1 = HcoIDsSS(11)
+       Inst%IDTMAMCL1   = HcoIDsSS(12)
+       Inst%IDTMAMSO41  = HcoIDsSS(13)
+       Inst%IDTMAMNu1   = HcoIDsSS(14)
+       Inst%IDTMAMSSLT2 = HcoIDsSS(15)
+       Inst%IDTMAMCL2   = HcoIDsSS(16)
+       Inst%IDTMAMSO42  = HcoIDsSS(17)
+       Inst%IDTMAMNu2   = HcoIDsSS(18)
+       Inst%IDTMAMSSLT3 = HcoIDsSS(19)
+       Inst%IDTMAMCL3   = HcoIDsSS(20)
+       Inst%IDTMAMSO43  = HcoIDsSS(21)
+       Inst%IDTMAMNu3   = HcoIDsSS(22)
+    ENDIF
+
+    ! MAM composition constants -- optional, default to the same values
+    ! historically used in the offline (OFFLINE_SEASALT) HEMCO_Config.rc
+    ! scale factors 5009/5010/5011/5003/5004, plus a new mass2num for the
+    ! aitken mode (derived to match the same implied SSA density).
+    CALL GetExtOpt( HcoState%Config, Inst%ExtNrSS, 'MAM SSA split radius', &
+                    OptValDp=Inst%MAMSplitR, FOUND=FOUND, RC=RC )
+    IF ( RC /= HCO_SUCCESS ) THEN
+        CALL HCO_ERROR( 'ERROR MAM-1', RC, THISLOC=LOC )
+        RETURN
+    ENDIF
+    IF ( .NOT. FOUND ) Inst%MAMSplitR = 0.05d0
+
+    CALL GetExtOpt( HcoState%Config, Inst%ExtNrSS, 'MAM SSA Na mass fraction', &
+                    OptValDp=Inst%SSNamf, FOUND=FOUND, RC=RC )
+    IF ( RC /= HCO_SUCCESS ) THEN
+        CALL HCO_ERROR( 'ERROR MAM-2', RC, THISLOC=LOC )
+        RETURN
+    ENDIF
+    IF ( .NOT. FOUND ) Inst%SSNamf = 0.385d0
+
+    CALL GetExtOpt( HcoState%Config, Inst%ExtNrSS, 'MAM SSA Cl mass fraction', &
+                    OptValDp=Inst%SSClmf, FOUND=FOUND, RC=RC )
+    IF ( RC /= HCO_SUCCESS ) THEN
+        CALL HCO_ERROR( 'ERROR MAM-3', RC, THISLOC=LOC )
+        RETURN
+    ENDIF
+    IF ( .NOT. FOUND ) Inst%SSClmf = 0.538d0
+
+    CALL GetExtOpt( HcoState%Config, Inst%ExtNrSS, 'MAM SSA SO4 mass fraction', &
+                    OptValDp=Inst%SSSO4f, FOUND=FOUND, RC=RC )
+    IF ( RC /= HCO_SUCCESS ) THEN
+        CALL HCO_ERROR( 'ERROR MAM-4', RC, THISLOC=LOC )
+        RETURN
+    ENDIF
+    IF ( .NOT. FOUND ) Inst%SSSO4f = 0.077d0
+
+    CALL GetExtOpt( HcoState%Config, Inst%ExtNrSS, 'MAM SSA mass2num accum', &
+                    OptValDp=Inst%Mass2NumAcc, FOUND=FOUND, RC=RC )
+    IF ( RC /= HCO_SUCCESS ) THEN
+        CALL HCO_ERROR( 'ERROR MAM-5', RC, THISLOC=LOC )
+        RETURN
+    ENDIF
+    IF ( .NOT. FOUND ) Inst%Mass2NumAcc = 1.60d17
+
+    CALL GetExtOpt( HcoState%Config, Inst%ExtNrSS, 'MAM SSA mass2num aitken', &
+                    OptValDp=Inst%Mass2NumAitk, FOUND=FOUND, RC=RC )
+    IF ( RC /= HCO_SUCCESS ) THEN
+        CALL HCO_ERROR( 'ERROR MAM-6', RC, THISLOC=LOC )
+        RETURN
+    ENDIF
+    IF ( .NOT. FOUND ) Inst%Mass2NumAitk = 2.117d19
+
+    CALL GetExtOpt( HcoState%Config, Inst%ExtNrSS, 'MAM SSA mass2num coarse', &
+                    OptValDp=Inst%Mass2NumCoarse, FOUND=FOUND, RC=RC )
+    IF ( RC /= HCO_SUCCESS ) THEN
+        CALL HCO_ERROR( 'ERROR MAM-7', RC, THISLOC=LOC )
+        RETURN
+    ENDIF
+    IF ( .NOT. FOUND ) Inst%Mass2NumCoarse = 2.65d13
 
     ! Get aerosol radius'
     SALA_REDGE_um(:) = 0.0d0

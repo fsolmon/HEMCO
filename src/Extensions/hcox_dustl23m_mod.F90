@@ -132,8 +132,14 @@ MODULE HCOX_DustL23M_mod
   INTEGER,              PARAMETER   :: NBINS            = 7
 
   ! Total number of species (NBINS + 1)
-  INTEGER,              PARAMETER   :: TNSPEC           = 8
-
+  ! INTEGER,              PARAMETER   :: TNSPEC           = 8
+  ! FAB include MAM . Revisti when making MAM and DST standard exclusive
+  ! FAB (2026-08): extended 11->20 to add MAMNu/MAMCA/MAMCO3 x 3 modes,
+  ! completing the MAM dust speciation (previously only MAMDUST1/2/3 mass
+  ! was emitted online; number/calcium/carbonate were only ever available
+  ! via the OFFLINE_DUST HEMCO_Config.rc redirects, which self-disable via
+  ! (((.not.DustL23M when this extension is on -- see MAM/devnotes.md).
+  INTEGER,              PARAMETER   :: TNSPEC           = 20
   ! Save the value of 1/3 so we don't need to keep recomputing it
   REAL(hp),             PARAMETER   :: ONE_THIRD        = 1.0_hp / 3.0_hp
 
@@ -337,6 +343,33 @@ CONTAINS
     FLUX(:,:,7) = TFLUX * 2.573e-1_hp
     FLUX(:,:,8) = TFLUX * 5.698e-1_hp
 
+! FAB MAM ! revisit when separating dust bin from MAM.
+    ! FAB (2026-08): MAMDUST1/2/3 corrected to the OIM-only sub-fraction
+    ! (95% of each mode's total dust mass fraction, per Ming Wu et al. 2022 /
+    ! HEMCO_Config.rc scale factors 5021/5024/5027 "massfr(Ai/Co)OIM") --
+    ! previously these used the FULL per-mode fraction (1.1e-2/1.65e-5/0.989),
+    ! silently omitting the 2%/3% Ca/CO3 split that MAMCA*/MAMCO3* below now
+    ! carry. Mode total fractions (Accum 1.1e-2, Aitken 1.65e-5, Coarse
+    ! 0.989) follow the Kok (2011) brittle-fragmentation mass split already
+    ! used for the 7-bin distribution above.
+    FLUX(:,:,9)  = TFLUX * 1.045e-2_hp   ! MAMDUST1 (accum, OIM only)
+    FLUX(:,:,10) = TFLUX * 1.5675e-5_hp  ! MAMDUST2 (aitken, OIM only)
+    FLUX(:,:,11) = TFLUX * 0.93955_hp    ! MAMDUST3 (coarse, OIM only)
+
+    ! FAB (2026-08): number (mass2num, mode fraction already baked in --
+    ! matches HEMCO_Config.rc 5005/5006/5007) + calcium + carbonate
+    ! (2%/3% of each mode's total dust mass -- matches 5022/5023, 5025/5026,
+    ! 5028/5029), completing the MAM dust speciation for all 3 modes.
+    FLUX(:,:,12) = TFLUX * 1.287e15_hp   ! MAMNu1  (accum number)
+    FLUX(:,:,13) = TFLUX * 0.0220e-2_hp  ! MAMCA1  (accum calcium)
+    FLUX(:,:,14) = TFLUX * 0.0330e-2_hp  ! MAMCO31 (accum carbonate)
+    FLUX(:,:,15) = TFLUX * 2.5575e14_hp  ! MAMNu2  (aitken number)
+    FLUX(:,:,16) = TFLUX * 3.3e-7_hp     ! MAMCA2  (aitken calcium)
+    FLUX(:,:,17) = TFLUX * 4.95e-7_hp    ! MAMCO32 (aitken carbonate)
+    FLUX(:,:,18) = TFLUX * 1.91866e13_hp ! MAMNu3  (coarse number)
+    FLUX(:,:,19) = TFLUX * 0.01978_hp    ! MAMCA3  (coarse calcium)
+    FLUX(:,:,20) = TFLUX * 0.02967_hp    ! MAMCO33 (coarse carbonate)
+
     ! Include DUST Alkalinity SOURCE, assuming an alkalinity
     ! of 4% by weight [kg].                  !tdf 05/10/08
     !tdf with 3% Ca, there's also 1% equ. Mg, makes 4%
@@ -347,7 +380,11 @@ CONTAINS
     !========================================================================
     ! PASS TO HEMCO STATE AND UPDATE DIAGNOSTICS
     !========================================================================
-    DO N = 1, TNSPEC
+    !FAB: bound by Inst%nSpc too -- Inst%HcoIDs is sized to the actual
+    ! species field in HEMCO_Config.rc (may be shorter than TNSPEC=20 if
+    ! the config hasn't been updated to include the MAMNu/MAMCA/MAMCO3
+    ! positions yet), so DO NOT read past it.
+    DO N = 1, MIN( TNSPEC, Inst%nSpc )
        IF ( Inst%HcoIDs(N) > 0 ) THEN
           ! Add to emissions array
           CALL HCO_EmisAdd( HcoState,        FLUX(:,:,N),                    &
@@ -360,7 +397,9 @@ CONTAINS
           ENDIF
        ENDIF
 
-       IF ( Inst%ExtNrAlk > 0 ) THEN
+       !FAB: also bound by Inst%nSpcAlk -- HcoIDsAlk is a separate species
+       ! list (DustAlk, ExtNr 126) that may be shorter than N goes.
+       IF ( Inst%ExtNrAlk > 0 .AND. N <= Inst%nSpcAlk ) THEN
           IF ( Inst%HcoIDsAlk(N) > 0 ) THEN
              ! Add to dust alkalinity emissions array
              CALL HCO_EmisAdd( HcoState,           FLUX_Alk(:,:,N),          &
@@ -479,7 +518,6 @@ CONTAINS
        CALL HCO_ERROR( MSG, RC, LOC )
        RETURN
     ENDIF
-
     ! Check for dust alkalinity option
     Inst%ExtNrAlk = GetExtNr( HcoState%Config%ExtList, 'DustAlk')
 
@@ -496,11 +534,12 @@ CONTAINS
     ENDIF
 
     ! Sanity check
-    IF ( Inst%nSpc /= TNSPEC ) THEN
-       MSG = 'DustL23M model does not have 7(+1 total) species!'
-       CALL HCO_ERROR(MSG, RC )
-       RETURN
-    ENDIF
+! FAB disable this for MAM additional species
+!    IF ( Inst%nSpc /= TNSPEC ) THEN
+!       MSG = 'DustL23M model does not have 7(+1 total) species!'
+!       CALL HCO_ERROR(MSG, RC )
+!       RETURN
+!    ENDIF
 
     ! There must be at least one species
     IF ( Inst%nSpc == 0 ) THEN

@@ -150,7 +150,7 @@ MODULE HCOX_GFED_MOD
    !FAB MAM emissions( ifdef ?)
    REAL(sp)                       :: MAMPOMfrac
    REAL(sp)                       :: MAMBCm2n
-
+   REAL(sp)                       :: MAMPOMm2n
    !=================================================================
    ! DATA ARRAY POINTERS
    !
@@ -729,6 +729,22 @@ CONTAINS
     ELSE
        Inst%MAMBCm2n = ValSp
     ENDIF
+
+    CALL GetExtOpt( HcoState%Config, ExtNr, 'MAMPOM mass2number', &
+                     OptValSp=ValSp, FOUND=FOUND, RC=RC )
+    IF ( RC /= HCO_SUCCESS ) THEN
+        CALL HCO_ERROR( 'ERROR 14', RC, THISLOC=LOC )
+        RETURN
+    ENDIF
+    IF ( .NOT. FOUND ) THEN
+       Inst%MAMPOMm2n = 5.67e+17
+    ELSE
+       Inst%MAMPOMm2n = ValSp
+    ENDIF
+
+
+
+
 
     ! Error check: OCPIfrac, BCPIfrac, and POG1frac must be between 0 and 1
     IF ( Inst%OCPIfrac < 0.0_sp .OR. Inst%OCPIfrac > 1.0_sp .OR. &
